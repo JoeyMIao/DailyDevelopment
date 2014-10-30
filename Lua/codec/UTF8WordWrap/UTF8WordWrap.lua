@@ -110,7 +110,6 @@ local UTF8_wordwrap = function (str, line_max_len, seperator)
 		if clen == 0 then
 			return false
 		else
-			print(clen)
 			table.insert(str_buffer, string.sub(str, pos, pos + clen-1))
 			pos = pos + clen
 			word_count = word_count + 1
