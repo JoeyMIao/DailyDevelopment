@@ -1,141 +1,144 @@
-START_FLAG =false
-
-
-local record_new = function(tab, key, value)
-  rawset(tab,key,value)
-  if START_FLAG then
-    local t = debug.getinfo(2)
-    if t~= nil and type(value)=="table" then
-       _G._index[tostring(value)] = {line=t.currentline,value=tostring(key),file = t.source}
+START_INFO = {[1] = false}
+function newindex_meta(tbl, key, value)
+  if START_INFO[1] then
+    if is_valid_vertex(value) then
+      if type(value)=="table" then
+        local t = debug.getinfo(2)
+        _G._leakinfo[tostring(value)] = {line=t.currentline,value=tostring(key),file = t.source}
+      end
+      DFS(vertex, _G._leakindex_table, key)
     end
   end
 end
 
-local record_new_recursivly =function(tab, key, value)
-  rawset(tab,key,value)
-  if START_FLAG then
-    local t = debug.getinfo(2)
-    if t~= nil and type(value)=="table" then
-      _G._index[tostring(value)] = {line=t.currentline,value=tostring(key),file = t.source}
-      set_detecmetatable(value, true)
+function newindex_meta_ext(tbl, key, value)
+  rawset(tbl,key,value)
+  if START_INFO[1] then
+    if is_valid_vertex(value) then
+      if type(value)=="table" then
+        local t = debug.getinfo(2)
+        _G._leakinfo[tostring(value)] = {line=t.currentline,value=tostring(key),file = t.source}
+      end
+      DFS(vertex, _G._leakindex_table, key)
     end
   end
 end
 
 
-set_detecmetatable = function(tab,need_recursive)
-  local meta = record_new
-  if need_recursive then
-    meta = record_new_recursivly
+
+function is_valid_vertex(vertex)
+  local vertex_type = type(vertex)
+  if vertex_type == "table" or vertex_type == "function" then
+    return true
+  else
+    return false
   end
+end
+
+function DFS(vertex, visited_tbl, vertex_name)
+  local vertex_str = tostring(vertex)
+  local vertex_type = type(vertex)
   
-  local othermeta = getmetatable(tab)
+  -- mark it as visited
+  visited_tbl[vertex_str]= vertex_name or true
+  
+  -- only tables and functions are vertex
+  if vertex_type =="table" then
+    visit_table(vertex, visited_tbl)
+  elseif vertex_type == "function" then
+    visit_func(vertex, visited_tbl)
+  end
+end
+
+function visit_func(vertex, visited_tbl)
+  for i=1,100,1 do
+    local name,value =debug.getupvalue(vertex,i)
+    if name then
+      if not visited_tbl[tostring(value)] and is_valid_vertex(value) then  
+        DFS(value, visited_tbl, name)
+      end
+    else
+      return
+    end
+  end
+  assert(false, "one function has more than 100 upvalue")
+end
+
+function visit_table(vertex, visited_tbl)
+  --  setmetatable
+  local othermeta = getmetatable(vertex)
   if othermeta then
     if othermeta.__newindex then
       local t_newindexfunc = othermeta.__newindex
       othermeta.__newindex = function(tab, key, value)
-        if START_FLAG then
-          local t = debug.getinfo(2)
-          if t~= nil and type(value)=="table" then
-            _G._index[tostring(value)] = {line=t.currentline,value=tostring(key),file = t.source}
-            if need_recursive then
-              set_detecmetatable(key, true)
-            end
-          end
-        end
+        newindex_meta(tab, key, value)
         t_newindexfunc(tab, key, value)
       end
     else
-        othermeta.__newindex = meta
+        othermeta.__newindex = newindex_meta_ext
     end
   else
-    setmetatable(tab, {__newindex =meta})
+    setmetatable(vertex, {__newindex =newindex_meta_ext})
   end
-  
-end
-
-
-function detec_begin(need_all_recursive)
-  local index_table  = {}
-  
-  local stack = {}
-  -- stack.push操作
-  table.insert(stack, _G)
-  table.insert(stack, debug.getregistry())
-  
-  while #stack ~= 0 do 
-    -- stack.pop操作
-    local t_table = stack[#stack]
-    table.remove(stack, #stack)
-    for i,v in pairs(t_table) do
-      if type(v) == "table" and not index_table[tostring(v)] then
-        set_detecmetatable(v, need_all_recursive)
-        
-        table.insert(stack, v)
-        index_table[tostring(v)] = true
-      end
+   
+  for i,v in pairs(vertex) do
+    if not visited_tbl[tostring(v)] and is_valid_vertex(v) then 
+      DFS(v, visited_tbl, i)
     end
   end
-  
-  rawset(_G, "_index", {})
-  rawset(_G, "_leak", index_table)
-  
-  START_FLAG = true
 end
 
+function detec_begin()
+  local visit_table = {}
+  local graph = {["[_G]"]=_G, ["[registry]"]=debug.getregistry()}
+  for i,v in pairs(graph) do
+    DFS(v, visit_table, i)
+  end
+  
+  _G._leakvisit_table = visit_table
+  _G._leakindex_table = {}
+  for i,v in pairs(visit_table) do
+    _G._leakindex_table[i] =v
+  end
+  _G._leakinfo = {}
+  
+  START_INFO[1] = true
+end
 
 function detec_end()
-  collectgarbage("collect")
+  START_INFO[1] = false
   
-  local index_table = {}
-  local leak_table = {}
-  local begin_table = _G._leak
-  local info_index = _G._index
-   _G._index = nil
-  _G._leak = nil
+  local leakvisit_table = _G._leakvisit_table
+  local leakinfo = _G._leakinfo
   
-  local stack = {}
-  -- stack.push操作
-  table.insert(stack, _G)
+  _G._leakvisit_table = nil
+  _G._leakinfo = nil
+  _G._leakindex_table = nil
   
-  while #stack ~= 0 do 
-    -- stack.pop操作
-    local t_table = stack[#stack]
-    table.remove(stack, #stack)
-    for i,v in pairs(t_table) do
-      if type(v) == "table" and not index_table[tostring(v)] then
-        index_table[tostring(v)] = true
-        if not begin_table[tostring(v)] then
-          table.insert(leak_table, tostring(v))
-        end
-        table.insert(stack, v)
-      end
-    end
+  local visit_table = {}
+  local graph = {[1]=_G, [2]=debug.getregistry()}
+  for i,v in pairs(graph) do
+    DFS(v, visit_table)
   end
   
   local result_table = {}
-  for i,v in pairs(leak_table) do 
-    local info = info_index[v]
-    if info then
-      result_table[info.file]             = result_table[info.file] or {}
-      result_table[info.file][info.line]  = result_table[info.file][info.line] or {}
-      table.insert(result_table[info.file][info.line], info.value)
+  for i,v in pairs(visit_table) do 
+    if not leakvisit_table[i] then
+      local info = leakinfo[i]
+      if info then
+        result_table[info.file]             = result_table[info.file] or {}
+        result_table[info.file][info.line]  = result_table[info.file][info.line] or {}
+        table.insert(result_table[info.file][info.line], info.value)
+      else
+        print("can't find info", i,v)
+      end
     end
   end
-
-  START_FLAG = false
+  
   return result_table
 end
 
-function loop(a)
-  for i,v in pairs(a) do
-    if type(v) == "table" then
-      print("loop("..tostring(i))
-      loop(v)
-    end
-  end
-end
-
 return {detec_begin = detec_begin, detec_end = detec_end}
+
 
 
